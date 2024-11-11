@@ -1,5 +1,6 @@
 import csv
-import string
+import math
+from collections import defaultdict
 
 def read_emotions(file):
     words = {}
@@ -8,7 +9,7 @@ def read_emotions(file):
         for row in reader:
             if len(row) < 2:  
                 continue
-            word, intensity = row[0].strip().lower(), row[1].strip()
+            word, intensity = row[0].strip().lower(), row[1].strip()  
             try:
                 words[word] = int(intensity) 
             except ValueError:
@@ -50,26 +51,33 @@ def load_resources():
     intensifiers = read_modifiers('intensifiers.csv')
     negations = read_negations('negations.csv')
 
+def compute_tf(text):
+    """Calcular la frecuencia de término (TF) de cada palabra en el texto."""
+    words = text.split()
+    word_count = defaultdict(int)
+    for word in words:
+        word_count[word] += 1
+    total_words = len(words)
+    tf = {word: count / total_words for word, count in word_count.items()}
+    return tf
 
-def correct_spelling(word, dictionary):
-    closest_word = min(dictionary.keys(), key=lambda w: levenshtein_distance(word, w))
-    return closest_word if levenshtein_distance(word, closest_word) <= 2 else word
+def compute_idf(documents):
+    """Calcular la frecuencia inversa de documento (IDF) para cada palabra en el conjunto de documentos."""
+    doc_count = len(documents)
+    word_doc_count = defaultdict(int)
+    
+    for doc in documents:
+        words = set(doc.split())  # Tomamos palabras únicas por documento
+        for word in words:
+            word_doc_count[word] += 1
+    
+    idf = {word: math.log(doc_count / (1 + count)) for word, count in word_doc_count.items()}
+    return idf
 
-def levenshtein_distance(s1, s2):
-    if len(s1) < len(s2):
-        return levenshtein_distance(s2, s1)
-    if len(s2) == 0:
-        return len(s1)
-    previous_row = range(len(s2) + 1)
-    for i, c1 in enumerate(s1):
-        current_row = [i + 1]
-        for j, c2 in enumerate(s2):
-            insertions = previous_row[j + 1] + 1
-            deletions = current_row[j] + 1
-            substitutions = previous_row[j] + (c1 != c2)
-            current_row.append(min(insertions, deletions, substitutions))
-        previous_row = current_row
-    return previous_row[-1]
+def compute_tfidf(tf, idf):
+    """Calcular el TF-IDF multiplicando TF y IDF."""
+    tfidf = {word: tf_value * idf.get(word, 0) for word, tf_value in tf.items()}
+    return tfidf
 
 def preprocess_text(text):
     text = text.lower()
@@ -77,53 +85,66 @@ def preprocess_text(text):
     sentences = [s.strip() for s in sentences if s]
     return sentences
 
-def analyze_sentence(sentence):
+def analyze_sentence(sentence, idf):
     words = sentence.split()
     score = 0
     counters = {"enojo": 0, "felicidad": 0, "miedo": 0, "tristeza": 0}
+    
+    tf = compute_tf(sentence)  # Calculamos el TF para la oración
+    tfidf = compute_tfidf(tf, idf)  # Calculamos el TF-IDF
+    
     i = 0
     while i < len(words):
-        word = correct_spelling(words[i], emotions) 
+        word = words[i].strip().lower()  # Normalizamos la palabra
         if word in negations:
-            i += 1
+            # Si encontramos una negación, no agregamos ningún valor para la siguiente emoción
+            i += 1  # Saltamos a la siguiente palabra
             if i < len(words):
-                next_word = correct_spelling(words[i], emotions)
+                next_word = words[i].strip().lower()
                 if next_word in emotions:
-                    emotion_value = -emotions[next_word]
+                    emotion_value = 0  # La emoción es anulada por la negación
                     score += emotion_value
                     classify_emotion(counters, next_word, emotion_value)
         elif word in intensifiers:
             i += 1
             if i < len(words):
-                next_word = correct_spelling(words[i], emotions)
+                next_word = words[i].strip().lower()
                 if next_word in emotions:
-                    emotion_value = emotions[next_word] * intensifiers[word]
+                    emotion_value = emotions[next_word] * intensifiers[word] * tfidf.get(next_word, 0)
                     score += emotion_value
                     classify_emotion(counters, next_word, emotion_value)
         elif word in emotions:
-            emotion_value = emotions[word]
+            emotion_value = emotions[word] * tfidf.get(word, 0)
             score += emotion_value
             classify_emotion(counters, word, emotion_value)
         i += 1
     return score, counters
 
 def classify_emotion(counters, word, value):
+    # Tomar el valor absoluto de la emoción para asegurar que sea positiva
+    absolute_value = abs(value)
+    
     if word in emotions:
         if word in read_emotions('enojo.csv'):
-            counters["enojo"] += value
+            counters["enojo"] += absolute_value
         elif word in read_emotions('felicidad.csv'):
-            counters["felicidad"] += value
+            counters["felicidad"] += absolute_value
         elif word in read_emotions('miedo.csv'):
-            counters["miedo"] += value
+            counters["miedo"] += absolute_value
         elif word in read_emotions('tristeza.csv'):
-            counters["tristeza"] += value
+            counters["tristeza"] += absolute_value
+
 
 def analyze_text(text):
     sentences = preprocess_text(text)
     total_score = 0
     emotion_counters = {"enojo": 0, "felicidad": 0, "miedo": 0, "tristeza": 0}
+    
+    # Calculamos IDF para todo el conjunto de oraciones
+    idf = compute_idf(sentences)
+    
     for sentence in sentences:
-        sentence_score, sentence_counters = analyze_sentence(sentence)
+        sentence_score, sentence_counters = analyze_sentence(sentence, idf)
         total_score += sentence_score
         for emotion, count in sentence_counters.items():
             emotion_counters[emotion] += count
